@@ -4,6 +4,52 @@
  * 支持模式差异化地图匹配 + sql.js 本地数据库持久化
  */
 
+// ===== WGS-84 to GCJ-02 (火星坐标系) 坐标转换 =====
+// 高德地图瓦片使用GCJ-02，数据使用WGS-84，必须转换才能对齐
+const COORD_PI = 3.14159265358979324;
+const COORD_A = 6378245.0;
+const COORD_EE = 0.00669342162296594323;
+
+function outOfChina(lng, lat) {
+  return lng < 72.004 || lng > 137.8347 || lat < 0.8293 || lat > 55.8271;
+}
+
+function transformLat(lng, lat) {
+  let ret = -100.0 + 2.0 * lng + 3.0 * lat + 0.2 * lat * lat + 0.1 * lng * lat + 0.2 * Math.sqrt(Math.abs(lng));
+  ret += (20.0 * Math.sin(6.0 * lng * COORD_PI) + 20.0 * Math.sin(2.0 * lng * COORD_PI)) * 2.0 / 3.0;
+  ret += (20.0 * Math.sin(lat * COORD_PI) + 40.0 * Math.sin(lat / 3.0 * COORD_PI)) * 2.0 / 3.0;
+  ret += (160.0 * Math.sin(lat / 12.0 * COORD_PI) + 320 * Math.sin(lat * COORD_PI / 30.0)) * 2.0 / 3.0;
+  return ret;
+}
+
+function transformLng(lng, lat) {
+  let ret = 300.0 + lng + 2.0 * lat + 0.1 * lng * lng + 0.1 * lng * lat + 0.1 * Math.sqrt(Math.abs(lng));
+  ret += (20.0 * Math.sin(6.0 * lng * COORD_PI) + 20.0 * Math.sin(2.0 * lng * COORD_PI)) * 2.0 / 3.0;
+  ret += (20.0 * Math.sin(lng * COORD_PI) + 40.0 * Math.sin(lng / 3.0 * COORD_PI)) * 2.0 / 3.0;
+  ret += (150.0 * Math.sin(lng / 12.0 * COORD_PI) + 300.0 * Math.sin(lng / 30.0 * COORD_PI)) * 2.0 / 3.0;
+  return ret;
+}
+
+function wgs84ToGcj02(lng, lat) {
+  if (outOfChina(lng, lat)) return [lng, lat];
+  let dLat = transformLat(lng - 105.0, lat - 35.0);
+  let dLng = transformLng(lng - 105.0, lat - 35.0);
+  const radLat = lat / 180.0 * COORD_PI;
+  let magic = Math.sin(radLat);
+  magic = 1 - COORD_EE * magic * magic;
+  const sqrtMagic = Math.sqrt(magic);
+  dLat = (dLat * 180.0) / ((COORD_A * (1 - COORD_EE)) / (magic * sqrtMagic) * COORD_PI);
+  dLng = (dLng * 180.0) / (COORD_A / sqrtMagic * Math.cos(radLat) * COORD_PI);
+  return [lng + dLng, lat + dLat];
+}
+
+// 转换节点坐标（创建新的节点对象，不修改原始数据）
+function convertNodeToGcj02(node) {
+  if (!node) return null;
+  const [gcjLng, gcjLat] = wgs84ToGcj02(node.lng, node.lat);
+  return { ...node, lat: gcjLat, lng: gcjLng };
+}
+
 // ===== State =====
 const state = {
   map: null,
@@ -27,14 +73,19 @@ const state = {
 
 // ===== Init =====
 async function initApp() {
-  // Load sample data (with database persistence)
-  await loadSampleData();
-
-  // Init map
+  // Init map first (so UI is interactive even if data loading fails)
   initMap();
 
   // Setup UI
   setupUI();
+
+  // Load sample data (with database persistence) - non-blocking
+  try {
+    await loadSampleData();
+  } catch (err) {
+    console.error('Failed to load sample data:', err);
+    loadEmbeddedData();
+  }
 }
 
 // ===== Map =====
@@ -43,29 +94,35 @@ function initMap() {
     container: 'map',
     style: {
       version: 8,
-      name: 'Offline Dark',
+      name: 'Offline Map',
       sources: {
-        'osm-tiles': {
+        'gaode-tiles': {
           type: 'raster',
-          tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+          tiles: [
+            'https://wprd01.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=7&x={x}&y={y}&z={z}',
+            'https://wprd02.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=7&x={x}&y={y}&z={z}',
+            'https://wprd03.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=7&x={x}&y={y}&z={z}',
+            'https://wprd04.is.autonavi.com/appmaptile?lang=zh_cn&size=1&scale=1&style=7&x={x}&y={y}&z={z}'
+          ],
           tileSize: 256,
-          attribution: '© OpenStreetMap contributors'
+          attribution: '&copy; AutoNavi'
         }
       },
       layers: [{
-        id: 'osm-layer',
+        id: 'gaode-layer',
         type: 'raster',
-        source: 'osm-tiles',
+        source: 'gaode-tiles',
         minzoom: 0,
-        maxzoom: 19
+        maxzoom: 18
       }],
-      glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf'
+      // glyphs 不设置，使用 localIdeographFontFamily 渲染中文
     },
-    center: [116.397, 39.920],
+    center: [116.403, 39.909], // GCJ-02 坐标（高德底图对齐）
     zoom: 13.5,
     minZoom: 10,
     maxZoom: 18,
-    attributionControl: false
+    attributionControl: false,
+    localIdeographFontFamily: 'Microsoft YaHei, PingFang SC, sans-serif'
   });
 
   state.map.addControl(new maplibregl.NavigationControl(), 'top-right');
@@ -75,10 +132,17 @@ function initMap() {
   state.map.on('click', onMapClick);
   state.map.on('contextmenu', onMapRightClick);
   state.map.on('mousemove', onMapMouseMove);
+
+  // 确保 canvas 尺寸与容器同步（flex 布局可能延迟计算）
+  requestAnimationFrame(() => {
+    if (state.map) state.map.resize();
+  });
 }
 
 function onMapLoaded() {
   console.log('Map loaded');
+  // 再次 resize 确保瓦片正确加载
+  state.map.resize();
 
   // Route source
   state.map.addSource('route', {
@@ -247,20 +311,22 @@ function onMapLoaded() {
       .addTo(state.map);
   });
 
-  // Render POIs and road network
-  renderPOIs();
-  renderRoadNetwork();
-
-  // Update data info
-  updateDataInfo();
+  // Render POIs and road network (only if data is already loaded)
+  if (state.poiData.length > 0) {
+    renderPOIs();
+    renderRoadNetwork();
+    updateDataInfo();
+  }
 }
 
 // ===== Map Events =====
 function onMapClick(e) {
-  const { lat, lng } = e.lngLat;
+  if (!e.lngLat) return;
+  // MapLibre 返回 WGS-84，转换为 GCJ-02 与数据对齐
+  const [gcjLng, gcjLat] = wgs84ToGcj02(e.lngLat.lng, e.lngLat.lat);
 
   if (state.clickMode) {
-    setWaypointFromMap(lat, lng, state.clickMode);
+    setWaypointFromMap(gcjLat, gcjLng, state.clickMode);
     cancelClickMode();
     return;
   }
@@ -268,17 +334,21 @@ function onMapClick(e) {
 
 function onMapRightClick(e) {
   e.preventDefault();
-  const { lat, lng } = e.lngLat;
-  reverseGeocode(lat, lng);
+  if (!e.lngLat) return;
+  const [gcjLng, gcjLat] = wgs84ToGcj02(e.lngLat.lng, e.lngLat.lat);
+  reverseGeocode(gcjLat, gcjLng);
 }
 
 function onMapMouseMove(e) {
-  const { lat, lng } = e.lngLat;
+  if (!e.lngLat) return;
+  const lat = e.lngLat.lat;
+  const lng = e.lngLat.lng;
   const overlay = document.getElementById('overlay-coords');
   if (overlay) {
     overlay.textContent = `${lat.toFixed(6)}, ${lng.toFixed(6)}`;
   }
-  document.getElementById('map-overlay-info').classList.remove('hidden');
+  const info = document.getElementById('map-overlay-info');
+  if (info) info.classList.remove('hidden');
 }
 
 // ===== Data Loading (with Database) =====
@@ -286,36 +356,37 @@ async function loadSampleData() {
   try {
     // 尝试使用 sql.js 数据库
     if (typeof initSqlJs === 'function') {
-      const SQL = await initSqlJs({
-        locateFile: f => `/node_modules/sql.js/dist/${f}`
-      });
+      let SQL;
+      try {
+        SQL = await initSqlJs({
+          locateFile: f => `/node_modules/sql.js/dist/${f}`
+        });
+      } catch (sqlErr) {
+        console.warn('sql.js WASM load failed, skipping database:', sqlErr.message);
+        throw new Error('sql.js WASM unavailable');
+      }
 
       state.db = new MapDatabase();
 
-      // 尝试从 IndexedDB 加载
-      const loaded = await state.db.loadFromIndexedDB(SQL);
-      if (loaded) {
-        state.graph = state.db.toGraph();
-        state.poiData = state.db.getPOIs();
-        console.log('Loaded from IndexedDB persistence');
-      } else {
-        // 首次加载：从 JSON 导入到数据库
+      // 始终从 JSON 重新加载（避免 GCJ-02 坐标重复偏移）
+      try {
         const resp = await fetch('/assets/data/sample-data.json');
         const data = await resp.json();
         await state.db.init(SQL);
         state.db.importFromJSON(data);
         state.graph = state.db.toGraph();
         state.poiData = data.pois || [];
-        // 持久化到 IndexedDB
-        await state.db.saveToIndexedDB();
-        console.log('Imported from JSON and saved to IndexedDB');
+        console.log('Imported from JSON');
+      } catch (dbErr) {
+        console.warn('Database operation failed, falling back:', dbErr.message);
+        throw dbErr;
       }
     } else {
-      // sql.js 不可用，回退到直接加载 JSON
       throw new Error('sql.js not available');
     }
   } catch (err) {
-    console.warn('Database load failed, using JSON fallback:', err.message);
+    // sql.js 不可用或数据库失败，直接用 JSON
+    console.warn('Using JSON fallback:', err.message);
     try {
       const resp = await fetch('/assets/data/sample-data.json');
       const data = await resp.json();
@@ -328,9 +399,44 @@ async function loadSampleData() {
     }
   }
 
+  // ===== 坐标系转换：WGS-84 -> GCJ-02（与高德底图对齐）=====
+  convertDataToGcj02();
+
   state.pathfinder = new Pathfinder(state.graph);
   state.mapMatcher = new MapMatcher(state.graph);
-  console.log(`Loaded: ${state.graph.nodeCount} nodes, ${state.graph.edgeCount} edges, ${state.poiData.length} POIs`);
+  console.log('Loaded: ' + state.graph.nodeCount + ' nodes, ' + state.graph.edgeCount + ' edges, ' + state.poiData.length + ' POIs');
+
+  // 如果地图已加载，渲染数据
+  if (state.map && state.map.getSource('pois')) {
+    renderPOIs();
+    renderRoadNetwork();
+    updateDataInfo();
+  }
+}
+
+let _dataConverted = false;
+
+function convertDataToGcj02() {
+  if (_dataConverted || !state.graph) return;
+  _dataConverted = true;
+
+  // 转换 graph 节点
+  for (const [id, node] of state.graph.nodes) {
+    const [gcjLng, gcjLat] = wgs84ToGcj02(node.lng, node.lat);
+    node.lng = gcjLng;
+    node.lat = gcjLat;
+  }
+  state.graph.buildSpatialIndex();
+
+  // 转换 POI
+  if (state.poiData) {
+    state.poiData = state.poiData.map(poi => {
+      const [gcjLng, gcjLat] = wgs84ToGcj02(poi.lng, poi.lat);
+      return { ...poi, lat: gcjLat, lng: gcjLng };
+    });
+  }
+
+  console.log('Coordinates converted to GCJ-02');
 }
 
 function loadEmbeddedData() {
@@ -357,12 +463,14 @@ function loadEmbeddedData() {
     ]
   };
   state.graph = Graph.fromJSON(data);
-  state.pathfinder = new Pathfinder(state.graph);
-  state.mapMatcher = new MapMatcher(state.graph);
   state.poiData = [
     { name: '天安门', category: 'scenic', lat: 39.9087, lng: 116.3975, address: '东城区天安门' },
     { name: '故宫', category: 'scenic', lat: 39.9163, lng: 116.3972, address: '景山前街4号' },
   ];
+  // 转换坐标
+  convertDataToGcj02();
+  state.pathfinder = new Pathfinder(state.graph);
+  state.mapMatcher = new MapMatcher(state.graph);
 }
 
 // ===== Renderers =====
@@ -543,13 +651,14 @@ function setWaypointFromMap(lat, lng, type) {
 
   // 显示匹配吸附指示器
   if (state.map?.getSource('snap-indicator')) {
-    const currentData = state.map.getSource('snap-indicator')._data || { type: 'FeatureCollection', features: [] };
+    const src = state.map.getSource('snap-indicator');
+    const currentData = src._data || { type: 'FeatureCollection', features: [] };
     currentData.features.push({
       type: 'Feature',
       geometry: { type: 'Point', coordinates: [snapLng, snapLat] },
       properties: { original: false }
     });
-    state.map.getSource('snap-indicator').setData(currentData);
+    src.setData(currentData);
   }
 
   // Add marker immediately (at snap point, not raw click)

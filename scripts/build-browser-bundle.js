@@ -1,6 +1,7 @@
 /**
  * 构建浏览器端引擎 bundle
- * 将 Node.js 模块转换为 UMD 格式并合并为一个文件
+ * 将 Node.js 模块转换为浏览器兼容的 UMD 格式并合并
+ * v2: 彻底清除所有 require/module.exports，确保浏览器端零报错
  */
 const fs = require('fs');
 const path = require('path');
@@ -15,72 +16,75 @@ if (!fs.existsSync(DIST_DIR)) {
 }
 
 /**
- * 将 Node.js 模块转换为 UMD 格式
+ * 将 Node.js 模块转换为浏览器端 UMD 格式
+ * - 彻底移除所有 require() 调用
+ * - 彻底移除所有 module.exports
+ * - 使用全局变量注入依赖
  */
-function toUMD(filePath, className, dependencies = {}) {
+function toBrowserModule(filePath, className, deps = {}) {
   let code = fs.readFileSync(filePath, 'utf-8');
 
-  // 移除 require 语句
-  for (const [dep, globalVar] of Object.entries(dependencies)) {
-    code = code.replace(new RegExp(`const\\s+\\w+\\s*=\\s*require\\('${dep}'\\)`, 'g'), '');
-  }
+  // 1. 移除所有 require() 调用（各种格式）
+  //    const Graph = require('./graph')
+  //    const Graph = require("./graph")
+  //    var X = require('...')
+  //    let X = require('...')
+  code = code.replace(/(?:const|let|var)\s+\w+\s*=\s*require\s*\(\s*['"][^'"]+['"]\s*\)\s*;?/g, '');
 
-  // 移除 module.exports
-  code = code.replace(/module\.exports\s*=\s*\w+;?\s*$/m, '');
+  // 2. 移除所有 module.exports
+  code = code.replace(/module\.exports\s*=\s*\w+\s*;?/g, '');
 
-  // 包装在 UMD 中
-  const depArgs = Object.values(dependencies).join(', ');
-  const depNames = Object.keys(dependencies).map(d => JSON.stringify(d)).join(', ');
+  // 3. 清理多余空行
+  code = code.replace(/\n{3,}/g, '\n\n');
+
+  // 4. 构建 UMD wrapper — 只保留浏览器端代码路径
+  const depArgs = Object.values(deps).join(', ');
 
   return `
-// === ${path.basename(filePath)} (UMD) ===
+// === ${path.basename(filePath)} (Browser UMD) ===
 (function(root, factory) {
-  if (typeof module !== 'undefined' && module.exports) {
-    module.exports = factory(${Object.values(dependencies).map(v => `require(${Object.keys(dependencies)[Object.values(dependencies).indexOf(v)]})`).join(', ')});
-  } else {
-    root.${className} = factory(${Object.values(dependencies).map(v => `root.${v}`).join(', ')});
-  }
-})(typeof self !== 'undefined' ? self : this, function(${depArgs}) {
+  // 浏览器端：直接挂载到全局
+  root.${className} = factory(${Object.values(deps).map(v => `root.${v}`).join(', ')});
+})(typeof self !== 'undefined' ? self : typeof window !== 'undefined' ? window : typeof global !== 'undefined' ? global : this, function(${depArgs}) {
   'use strict';
 ${code}
+
   return ${className};
 });
+
 `;
 }
 
-// 构建各模块
-const graphUMD = toUMD(
-  path.join(ENGINE_DIR, 'graph.js'),
-  'Graph'
-);
+// 构建各模块（按依赖顺序）
+const modules = [
+  { file: 'graph.js', className: 'Graph', deps: {} },
+  { file: 'pathfinder.js', className: 'Pathfinder', deps: { Graph: 'Graph' } },
+  { file: 'map-matcher.js', className: 'MapMatcher', deps: { Graph: 'Graph' } },
+  { file: 'database.js', className: 'MapDatabase', deps: { Graph: 'Graph' } },
+];
 
-const pathfinderUMD = toUMD(
-  path.join(ENGINE_DIR, 'pathfinder.js'),
-  'Pathfinder',
-  { './graph': 'Graph' }
-);
-
-const mapMatcherUMD = toUMD(
-  path.join(ENGINE_DIR, 'map-matcher.js'),
-  'MapMatcher',
-  { './graph': 'Graph' }
-);
-
-const databaseUMD = toUMD(
-  path.join(ENGINE_DIR, 'database.js'),
-  'MapDatabase',
-  { './graph': 'Graph' }
-);
-
-// 合并输出
-const bundle = `/* engine-bundle.js - 自动生成，请勿手动编辑 */
+let bundleContent = `/* engine-bundle.js - 自动生成，请勿手动编辑 */
 /* 生成时间: ${new Date().toISOString()} */
-${graphUMD}
-${pathfinderUMD}
-${mapMatcherUMD}
-${databaseUMD}
+/* 浏览器端专用 - 已移除所有 require/module.exports */
 `;
 
-fs.writeFileSync(OUTPUT_FILE, bundle, 'utf-8');
-console.log(`✅ 引擎 bundle 已生成: ${OUTPUT_FILE}`);
-console.log(`   大小: ${(Buffer.byteLength(bundle) / 1024).toFixed(1)} KB`);
+for (const mod of modules) {
+  const filePath = path.join(ENGINE_DIR, mod.file);
+  bundleContent += toBrowserModule(filePath, mod.className, mod.deps);
+}
+
+fs.writeFileSync(OUTPUT_FILE, bundleContent, 'utf-8');
+
+// 验证 bundle
+const issues = [];
+if (bundleContent.includes('require(')) issues.push('包含 require()');
+if (bundleContent.includes('module.exports')) issues.push('包含 module.exports');
+
+if (issues.length > 0) {
+  console.log('⚠️  警告: ' + issues.join(', '));
+} else {
+  console.log('✅ Bundle 验证通过: 无 require/module.exports 残留');
+}
+
+console.log('✅ 引擎 bundle 已生成: ' + OUTPUT_FILE);
+console.log('   大小: ' + (Buffer.byteLength(bundleContent) / 1024).toFixed(1) + ' KB');

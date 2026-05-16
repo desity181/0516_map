@@ -1,14 +1,12 @@
 /* engine-bundle.js - 自动生成，请勿手动编辑 */
-/* 生成时间: 2026-05-16T05:14:20.875Z */
+/* 生成时间: 2026-05-16T05:41:40.901Z */
+/* 浏览器端专用 - 已移除所有 require/module.exports */
 
-// === graph.js (UMD) ===
+// === graph.js (Browser UMD) ===
 (function(root, factory) {
-  if (typeof module !== 'undefined' && module.exports) {
-    module.exports = factory();
-  } else {
-    root.Graph = factory();
-  }
-})(typeof self !== 'undefined' ? self : this, function() {
+  // 浏览器端：直接挂载到全局
+  root.Graph = factory();
+})(typeof self !== 'undefined' ? self : typeof window !== 'undefined' ? window : typeof global !== 'undefined' ? global : this, function() {
   'use strict';
 /**
  * Graph - 路网图数据结构
@@ -237,24 +235,21 @@ class Graph {
 }
 
 
+
   return Graph;
 });
 
 
-// === pathfinder.js (UMD) ===
+// === pathfinder.js (Browser UMD) ===
 (function(root, factory) {
-  if (typeof module !== 'undefined' && module.exports) {
-    module.exports = factory(require(./graph));
-  } else {
-    root.Pathfinder = factory(root.Graph);
-  }
-})(typeof self !== 'undefined' ? self : this, function(Graph) {
+  // 浏览器端：直接挂载到全局
+  root.Pathfinder = factory(root.Graph);
+})(typeof self !== 'undefined' ? self : typeof window !== 'undefined' ? window : typeof global !== 'undefined' ? global : this, function(Graph) {
   'use strict';
 /**
  * Pathfinder - 路径规划引擎
  * 实现 Dijkstra 和 A* 算法，支持多途经点和多模态
  */
-;
 
 class Pathfinder {
   constructor(graph) {
@@ -567,25 +562,22 @@ class Pathfinder {
 }
 
 
+
   return Pathfinder;
 });
 
 
-// === map-matcher.js (UMD) ===
+// === map-matcher.js (Browser UMD) ===
 (function(root, factory) {
-  if (typeof module !== 'undefined' && module.exports) {
-    module.exports = factory(require(./graph));
-  } else {
-    root.MapMatcher = factory(root.Graph);
-  }
-})(typeof self !== 'undefined' ? self : this, function(Graph) {
+  // 浏览器端：直接挂载到全局
+  root.MapMatcher = factory(root.Graph);
+})(typeof self !== 'undefined' ? self : typeof window !== 'undefined' ? window : typeof global !== 'undefined' ? global : this, function(Graph) {
   'use strict';
 /**
  * MapMatcher - 模式差异化地图匹配引擎
  * 支持驾车、步行、骑行三种模式的差异化匹配策略
  * 包含点到边投影、道路类型权重排序、虚拟节点插入
  */
-;
 
 class MapMatcher {
   constructor(graph) {
@@ -771,18 +763,16 @@ class MapMatcher {
 }
 
 
+
   return MapMatcher;
 });
 
 
-// === database.js (UMD) ===
+// === database.js (Browser UMD) ===
 (function(root, factory) {
-  if (typeof module !== 'undefined' && module.exports) {
-    module.exports = factory(require(./graph));
-  } else {
-    root.MapDatabase = factory(root.Graph);
-  }
-})(typeof self !== 'undefined' ? self : this, function(Graph) {
+  // 浏览器端：直接挂载到全局
+  root.MapDatabase = factory(root.Graph);
+})(typeof self !== 'undefined' ? self : typeof window !== 'undefined' ? window : typeof global !== 'undefined' ? global : this, function(Graph) {
   'use strict';
 /**
  * MapDatabase - 基于 sql.js 的本地 SQLite 数据库
@@ -940,7 +930,7 @@ class MapDatabase {
    * 导出为 Graph 对象
    */
   toGraph() {
-    ;
+    
     const graph = new Graph();
 
     const nodeRows = this.db.exec('SELECT id, lat, lng FROM nodes');
@@ -1097,6 +1087,7 @@ class MapDatabase {
     );
   }
 }
+
 
 
   return MapDatabase;
