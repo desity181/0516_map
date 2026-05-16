@@ -1,6 +1,7 @@
 /**
- * 离线地图路径规划工具 v1.0 - 前端主逻辑
- * 纯 Web 版本，无需 Electron，直接浏览器运行
+ * 离线地图路径规划工具 v2.0 - 前端主逻辑
+ * 重构版：使用引擎 bundle（Graph/Pathfinder/MapMatcher/MapDatabase）
+ * 支持模式差异化地图匹配 + sql.js 本地数据库持久化
  */
 
 // ===== State =====
@@ -8,6 +9,8 @@ const state = {
   map: null,
   graph: null,
   pathfinder: null,
+  mapMatcher: null,
+  db: null,
   poiData: [],
   waypoints: [
     { id: 0, lat: null, lng: null, name: '' },
@@ -18,12 +21,13 @@ const state = {
   clickMode: null,
   routeResult: null,
   markers: [],
-  networkLayerAdded: false
+  networkLayerAdded: false,
+  matchResults: [] // 地图匹配结果，用于虚拟节点清理
 };
 
 // ===== Init =====
 async function initApp() {
-  // Load sample data first
+  // Load sample data (with database persistence)
   await loadSampleData();
 
   // Init map
@@ -119,6 +123,24 @@ function onMapLoaded() {
       'line-color': '#93c5fd',
       'line-width': 2,
       'line-opacity': 0.7
+    }
+  });
+
+  // Match snap indicator source
+  state.map.addSource('snap-indicator', {
+    type: 'geojson',
+    data: { type: 'FeatureCollection', features: [] }
+  });
+  state.map.addLayer({
+    id: 'snap-indicator-layer',
+    type: 'circle',
+    source: 'snap-indicator',
+    paint: {
+      'circle-radius': 6,
+      'circle-color': '#22c55e',
+      'circle-stroke-width': 2,
+      'circle-stroke-color': '#0f172a',
+      'circle-opacity': 0.8
     }
   });
 
@@ -259,19 +281,56 @@ function onMapMouseMove(e) {
   document.getElementById('map-overlay-info').classList.remove('hidden');
 }
 
-// ===== Data Loading =====
+// ===== Data Loading (with Database) =====
 async function loadSampleData() {
   try {
-    const resp = await fetch('/assets/data/sample-data.json');
-    const data = await resp.json();
-    state.poiData = data.pois || [];
-    state.graph = buildGraph(data.graph);
-    state.pathfinder = new Pathfinder(state.graph);
-    console.log(`Loaded: ${state.graph.nodeCount} nodes, ${state.graph.edgeCount} edges, ${state.poiData.length} POIs`);
+    // 尝试使用 sql.js 数据库
+    if (typeof initSqlJs === 'function') {
+      const SQL = await initSqlJs({
+        locateFile: f => `/node_modules/sql.js/dist/${f}`
+      });
+
+      state.db = new MapDatabase();
+
+      // 尝试从 IndexedDB 加载
+      const loaded = await state.db.loadFromIndexedDB(SQL);
+      if (loaded) {
+        state.graph = state.db.toGraph();
+        state.poiData = state.db.getPOIs();
+        console.log('Loaded from IndexedDB persistence');
+      } else {
+        // 首次加载：从 JSON 导入到数据库
+        const resp = await fetch('/assets/data/sample-data.json');
+        const data = await resp.json();
+        await state.db.init(SQL);
+        state.db.importFromJSON(data);
+        state.graph = state.db.toGraph();
+        state.poiData = data.pois || [];
+        // 持久化到 IndexedDB
+        await state.db.saveToIndexedDB();
+        console.log('Imported from JSON and saved to IndexedDB');
+      }
+    } else {
+      // sql.js 不可用，回退到直接加载 JSON
+      throw new Error('sql.js not available');
+    }
   } catch (err) {
-    console.error('Failed to load sample data:', err);
-    loadEmbeddedData();
+    console.warn('Database load failed, using JSON fallback:', err.message);
+    try {
+      const resp = await fetch('/assets/data/sample-data.json');
+      const data = await resp.json();
+      state.poiData = data.pois || [];
+      state.graph = Graph.fromJSON(data.graph);
+    } catch (e2) {
+      console.error('Failed to load sample data:', e2);
+      loadEmbeddedData();
+      return;
+    }
   }
+
+  state.pathfinder = new Pathfinder(state.graph);
+  state.mapMatcher = new MapMatcher(state.graph);
+  console.log(`Loaded: ${state.graph.nodeCount} nodes, ${state.graph.edgeCount} edges, ${state.poiData.length} POIs`);
 }
 
 function loadEmbeddedData() {
@@ -297,191 +356,13 @@ function loadEmbeddedData() {
       [5,8,1.3,40,'primary','东单大街'],[8,5,1.3,40,'primary','东单大街'],
     ]
   };
-  state.graph = buildGraph(data);
+  state.graph = Graph.fromJSON(data);
   state.pathfinder = new Pathfinder(state.graph);
+  state.mapMatcher = new MapMatcher(state.graph);
   state.poiData = [
     { name: '天安门', category: 'scenic', lat: 39.9087, lng: 116.3975, address: '东城区天安门' },
     { name: '故宫', category: 'scenic', lat: 39.9163, lng: 116.3972, address: '景山前街4号' },
   ];
-}
-
-// ===== Graph Builder =====
-function buildGraph(data) {
-  const nodes = new Map();
-  const edges = new Map();
-
-  for (const [id, lat, lng] of data.nodes) {
-    nodes.set(id, { id, lat, lng });
-    edges.set(id, []);
-  }
-
-  for (const [from, to, distance, speed, mode, name] of data.edges) {
-    if (edges.has(from)) {
-      edges.get(from).push({ to, distance, speed, mode, name });
-    }
-  }
-
-  const spatialIndex = [];
-  for (const [id, node] of nodes) {
-    spatialIndex.push({ id, lat: node.lat, lng: node.lng });
-  }
-  spatialIndex.sort((a, b) => a.lat - b.lat);
-
-  return {
-    nodes, edges, spatialIndex,
-    get nodeCount() { return nodes.size; },
-    get edgeCount() { let c = 0; for (const e of edges.values()) c += e.length; return c; },
-    getNode(id) { return nodes.get(id); },
-    getNeighbors(id) { return edges.get(id) || []; },
-    findNearestNode(lat, lng) {
-      let minDist = Infinity, nearestId = null;
-      for (const entry of spatialIndex) {
-        const dist = haversine(lat, lng, entry.lat, entry.lng);
-        if (dist < minDist) { minDist = dist; nearestId = entry.id; }
-      }
-      return nearestId;
-    }
-  };
-}
-
-function haversine(lat1, lng1, lat2, lng2) {
-  const R = 6371;
-  const dLat = (lat2 - lat1) * Math.PI / 180;
-  const dLng = (lng2 - lng1) * Math.PI / 180;
-  const a = Math.sin(dLat / 2) ** 2 +
-            Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
-            Math.sin(dLng / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
-
-// ===== Pathfinder =====
-class Pathfinder {
-  constructor(graph) { this.graph = graph; }
-
-  findPath(startId, endId, mode = 'driving', optimize = 'fastest') {
-    if (startId === endId) return { path: [startId], distance: 0, time: 0, steps: [] };
-
-    const endNode = this.graph.getNode(endId);
-    const openSet = new Set();
-    const closedSet = new Set();
-    const gScore = new Map();
-    const fScore = new Map();
-    const cameFrom = new Map();
-    const h = this._heuristic.bind(this, endNode);
-
-    gScore.set(startId, 0);
-    fScore.set(startId, h(startId));
-    openSet.add(startId);
-    cameFrom.set(startId, { parent: null, edge: null });
-
-    let iterations = 0;
-    const maxIter = 100000;
-
-    while (openSet.size > 0 && iterations++ < maxIter) {
-      let currentId = null, currentF = Infinity;
-      for (const id of openSet) {
-        const f = fScore.get(id) || Infinity;
-        if (f < currentF) { currentF = f; currentId = id; }
-      }
-
-      if (currentId === endId) return this._reconstructPath(cameFrom, currentId);
-
-      openSet.delete(currentId);
-      closedSet.add(currentId);
-
-      for (const edge of this.graph.getNeighbors(currentId)) {
-        if (closedSet.has(edge.to)) continue;
-        if (!this._edgeCompatible(edge, mode)) continue;
-
-        const edgeWeight = this._calcWeight(edge, mode, optimize);
-        const tentativeG = (gScore.get(currentId) || 0) + edgeWeight;
-
-        const existingG = gScore.get(edge.to);
-        if (existingG === undefined || tentativeG < existingG) {
-          cameFrom.set(edge.to, { parent: currentId, edge });
-          gScore.set(edge.to, tentativeG);
-          fScore.set(edge.to, tentativeG + h(edge.to));
-          openSet.add(edge.to);
-        }
-      }
-    }
-    return null;
-  }
-
-  findPathMultiWaypoint(waypointIds, mode = 'driving', optimize = 'fastest') {
-    if (waypointIds.length < 2) return null;
-
-    let totalDistance = 0, totalTime = 0, fullPath = [], allSteps = [];
-
-    for (let i = 0; i < waypointIds.length - 1; i++) {
-      const result = this.findPath(waypointIds[i], waypointIds[i + 1], mode, optimize);
-      if (!result) return null;
-
-      totalDistance += result.distance;
-      totalTime += result.time;
-      fullPath = i === 0 ? [...result.path] : [...fullPath, ...result.path.slice(1)];
-      allSteps.push(...result.steps);
-    }
-
-    return { path: fullPath, distance: totalDistance, time: totalTime, steps: allSteps };
-  }
-
-  _heuristic(endNode, nodeId) {
-    const node = this.graph.getNode(nodeId);
-    if (!node || !endNode) return 0;
-    return haversine(node.lat, node.lng, endNode.lat, endNode.lng);
-  }
-
-  _calcWeight(edge, mode, optimize) {
-    if (optimize === 'shortest') return edge.distance;
-    const speed = this._getSpeed(edge, mode);
-    return speed > 0 ? edge.distance / speed : edge.distance;
-  }
-
-  _getSpeed(edge, mode) {
-    return { walking: 5, cycling: 15, driving: edge.speed || 50 }[mode] || 50;
-  }
-
-  _edgeCompatible(edge, mode) {
-    if (!edge.mode) return true;
-    const m = {
-      driving: ['driving','motorway','trunk','primary','secondary','tertiary','residential'],
-      walking: ['walking','footway','pedestrian','path','driving','residential','secondary','primary','trunk','tertiary'],
-      cycling: ['cycling','cycleway','driving','residential','secondary','tertiary','primary','trunk']
-    };
-    return (m[mode] || []).includes(edge.mode);
-  }
-
-  _reconstructPath(cameFrom, endId) {
-    const path = [], steps = [];
-    let totalDist = 0, totalTime = 0, currentId = endId;
-
-    while (currentId !== null) {
-      const record = cameFrom.get(currentId);
-      if (!record && currentId !== endId) break;
-
-      path.unshift(currentId);
-
-      if (record && record.edge) {
-        totalDist += record.edge.distance;
-        totalTime += record.edge.distance / (record.edge.speed || 50);
-        steps.unshift({
-          from: record.parent, to: currentId,
-          distance: record.edge.distance, name: record.edge.name || '未命名道路',
-          speed: record.edge.speed || 50
-        });
-      }
-
-      currentId = record ? record.parent : null;
-    }
-
-    return {
-      path,
-      distance: Math.round(totalDist * 100) / 100,
-      time: Math.round(totalTime * 60 * 10) / 10,
-      steps
-    };
-  }
 }
 
 // ===== Renderers =====
@@ -618,7 +499,7 @@ function updateDataInfo() {
   document.getElementById('info-pois').textContent = state.poiData.length;
 }
 
-// ===== Waypoints =====
+// ===== Waypoints (with Map Matching) =====
 function setWaypointFromMap(lat, lng, type) {
   let idx;
   if (type === 'start') idx = 0;
@@ -628,22 +509,53 @@ function setWaypointFromMap(lat, lng, type) {
     if (idx === -1) idx = state.waypoints.length - 1;
   }
 
-  state.waypoints[idx].lat = lat;
-  state.waypoints[idx].lng = lng;
+  // 使用模式差异化地图匹配
+  let matchResult = null;
+  if (state.mapMatcher) {
+    matchResult = state.mapMatcher.matchPoint(lat, lng, state.currentMode);
+  } else {
+    // 回退到最近节点
+    const nodeId = state.graph.findNearestNode(lat, lng);
+    const node = state.graph.getNode(nodeId);
+    matchResult = {
+      nodeId,
+      projection: { lat: node?.lat || lat, lng: node?.lng || lng },
+      virtualNode: null
+    };
+  }
 
-  const nearestPOI = findNearestPOI(lat, lng);
+  // 使用匹配后的坐标（可能在边上投影点）
+  const snapLat = matchResult.projection.lat;
+  const snapLng = matchResult.projection.lng;
+
+  state.waypoints[idx].lat = snapLat;
+  state.waypoints[idx].lng = snapLng;
+  state.waypoints[idx].matchNodeId = matchResult.nodeId;
+
+  const nearestPOI = findNearestPOI(snapLat, snapLng);
   const name = nearestPOI
     ? `${nearestPOI.name}附近`
-    : `${lat.toFixed(4)}, ${lng.toFixed(4)}`;
+    : `${snapLat.toFixed(4)}, ${snapLng.toFixed(4)}`;
   state.waypoints[idx].name = name;
 
   const inputs = document.querySelectorAll('.waypoint-input');
   if (inputs[idx]) inputs[idx].value = name;
 
-  // Add marker immediately
+  // 显示匹配吸附指示器
+  if (state.map?.getSource('snap-indicator')) {
+    const currentData = state.map.getSource('snap-indicator')._data || { type: 'FeatureCollection', features: [] };
+    currentData.features.push({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [snapLng, snapLat] },
+      properties: { original: false }
+    });
+    state.map.getSource('snap-indicator').setData(currentData);
+  }
+
+  // Add marker immediately (at snap point, not raw click)
   const markerType = idx === 0 ? 'start' : idx === state.waypoints.length - 1 ? 'end' : 'via';
   const label = idx === 0 ? 'A' : idx === state.waypoints.length - 1 ? 'B' : String(idx + 1);
-  addMarker(lat, lng, markerType, label);
+  addMarker(snapLat, snapLng, markerType, label);
 }
 
 function addWaypoint() {
@@ -759,7 +671,7 @@ function clearMarkers() {
   state.markers = [];
 }
 
-// ===== Route Planning =====
+// ===== Route Planning (with Map Matching) =====
 function planRoute() {
   if (!state.pathfinder || !state.graph) {
     alert('路网数据尚未加载完成');
@@ -772,7 +684,17 @@ function planRoute() {
     return;
   }
 
-  const nodeIds = validWaypoints.map(w => state.graph.findNearestNode(w.lat, w.lng));
+  // 使用地图匹配获取节点 ID
+  const nodeIds = validWaypoints.map(w => {
+    // 如果已经有匹配结果，直接用
+    if (w.matchNodeId) return w.matchNodeId;
+    // 否则重新匹配
+    if (state.mapMatcher) {
+      const result = state.mapMatcher.matchPoint(w.lat, w.lng, state.currentMode);
+      return result.nodeId;
+    }
+    return state.graph.findNearestNode(w.lat, w.lng);
+  });
 
   if (nodeIds.some(id => id === null || id === undefined)) {
     alert('无法找到附近的道路节点');
@@ -800,9 +722,12 @@ function clearRoute() {
   if (state.map?.getSource('route')) {
     state.map.getSource('route').setData({ type: 'FeatureCollection', features: [] });
   }
+  if (state.map?.getSource('snap-indicator')) {
+    state.map.getSource('snap-indicator').setData({ type: 'FeatureCollection', features: [] });
+  }
 
   clearMarkers();
-  state.waypoints.forEach(w => { w.lat = null; w.lng = null; w.name = ''; });
+  state.waypoints.forEach(w => { w.lat = null; w.lng = null; w.name = ''; w.matchNodeId = undefined; });
 
   // Reset to 2 waypoints
   if (state.waypoints.length > 2) {
@@ -827,7 +752,17 @@ function searchPOI() {
   const container = document.getElementById('poi-results');
   container.innerHTML = '';
 
-  const filtered = state.poiData.filter(p => {
+  let poiList = state.poiData;
+
+  // 如果有数据库，优先从数据库查询
+  if (state.db) {
+    try {
+      const dbPois = state.db.getPOIs(activeCat !== 'all' ? activeCat : null);
+      if (dbPois.length > 0) poiList = dbPois;
+    } catch (e) { /* fallback */ }
+  }
+
+  const filtered = poiList.filter(p => {
     const matchName = !keyword || p.name.toLowerCase().includes(keyword) || (p.address || '').toLowerCase().includes(keyword);
     const matchCat = activeCat === 'all' || p.category === activeCat;
     return matchName && matchCat;
@@ -862,7 +797,7 @@ function searchPOI() {
 function findNearestPOI(lat, lng) {
   let nearest = null, minDist = Infinity;
   for (const poi of state.poiData) {
-    const dist = haversine(lat, lng, poi.lat, poi.lng);
+    const dist = Graph.haversine(lat, lng, poi.lat, poi.lng);
     if (dist < minDist) { minDist = dist; nearest = poi; }
   }
   return minDist < 0.5 ? nearest : null;
@@ -874,9 +809,21 @@ function reverseGeocode(lat, lng) {
   resultDiv.classList.remove('hidden');
 
   const nearby = state.poiData
-    .map(p => ({ ...p, dist: haversine(lat, lng, p.lat, p.lng) }))
+    .map(p => ({ ...p, dist: Graph.haversine(lat, lng, p.lat, p.lng) }))
     .sort((a, b) => a.dist - b.dist)
     .slice(0, 5);
+
+  // 显示地图匹配信息
+  let matchInfo = '';
+  if (state.mapMatcher) {
+    const match = state.mapMatcher.matchPoint(lat, lng, state.currentMode);
+    const modeNames = { driving: '驾车', walking: '步行', cycling: '骑行' };
+    matchInfo = `<div style="margin-top:6px;padding-top:6px;border-top:1px solid rgba(148,163,184,0.2)">
+      <span style="color:#22c55e;font-size:11px">📍 ${modeNames[state.currentMode]}匹配</span><br>
+      <span style="color:var(--text-muted);font-size:11px">吸附距离: ${Math.round(match.projection.distance * 1000)}m</span>
+      ${match.virtualNode ? '<br><span style="color:var(--text-muted);font-size:11px">边中点吸附(虚拟节点)</span>' : ''}
+    </div>`;
+  }
 
   if (nearby.length > 0 && nearby[0].dist < 1) {
     const poi = nearby[0];
@@ -886,12 +833,14 @@ function reverseGeocode(lat, lng) {
       <span style="color:var(--text-muted);font-size:11px">距此 ${Math.round(poi.dist * 1000)}m</span>
       ${nearby.length > 1 ? '<br><span style="color:var(--text-muted);font-size:11px">附近: ' +
         nearby.slice(1, 4).map(n => n.name).join('、') + '</span>' : ''}
+      ${matchInfo}
     `;
   } else {
     resultDiv.innerHTML = `
       <strong>📍 坐标位置</strong><br>
       <span style="color:var(--text-muted)">纬度: ${lat.toFixed(6)}</span><br>
       <span style="color:var(--text-muted)">经度: ${lng.toFixed(6)}</span>
+      ${matchInfo}
     `;
   }
 

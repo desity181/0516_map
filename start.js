@@ -19,7 +19,8 @@ const MIME_TYPES = {
   '.jpg': 'image/jpeg',
   '.svg': 'image/svg+xml',
   '.pbf': 'application/x-protobuf',
-  '.mvt': 'application/vnd.mapbox-vector-tile'
+  '.mvt': 'application/vnd.mapbox-vector-tile',
+  '.wasm': 'application/wasm'
 };
 
 const server = http.createServer((req, res) => {

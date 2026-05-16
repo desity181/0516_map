@@ -7,6 +7,7 @@ class Graph {
     this.nodes = new Map();   // id -> { id, lat, lng }
     this.edges = new Map();   // id -> [{ to, distance, speed, mode, name }]
     this.spatialIndex = null; // R-tree 空间索引
+    this._virtualIdCounter = -1; // 虚拟节点 ID 计数器（负数避免碰撞）
   }
 
   addNode(id, lat, lng) {
@@ -107,6 +108,80 @@ class Graph {
    * Haversine 距离计算 (km)
    */
   _haversine(lat1, lng1, lat2, lng2) {
+    const R = 6371;
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLng = (lng2 - lng1) * Math.PI / 180;
+    const a = Math.sin(dLat / 2) ** 2 +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLng / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  }
+
+  /**
+   * 查找半径范围内的节点 - 基于空间索引
+   */
+  findNodesInRadius(lat, lng, radiusKm) {
+    if (!this.spatialIndex) this.buildSpatialIndex();
+
+    const latRange = radiusKm / 111.0; // 1度纬度 ≈ 111km
+    const lngRange = radiusKm / (111.0 * Math.cos(lat * Math.PI / 180));
+
+    const startIdx = this._binarySearchLat(lat - latRange);
+    const endIdx = this._binarySearchLat(lat + latRange);
+
+    const results = [];
+    for (let i = startIdx; i <= endIdx && i < this.spatialIndex.length; i++) {
+      const entry = this.spatialIndex[i];
+      const dist = this._haversine(lat, lng, entry.lat, entry.lng);
+      if (dist <= radiusKm) {
+        results.push({ id: entry.id, lat: entry.lat, lng: entry.lng, distance: dist });
+      }
+    }
+
+    return results;
+  }
+
+  /**
+   * 插入虚拟节点（地图匹配时在边中点插入）
+   */
+  insertVirtualNode(fromId, edge, projection) {
+    const virtualId = this._virtualIdCounter--;
+    this.addNode(virtualId, projection.lat, projection.lng);
+
+    const dist1 = edge.distance * projection.fraction;
+    const dist2 = edge.distance * (1 - projection.fraction);
+
+    this.addEdge(fromId, virtualId, dist1, edge.speed, edge.mode, edge.name, false);
+    this.addEdge(virtualId, edge.to, dist2, edge.speed, edge.mode, edge.name, false);
+
+    // 删除原始正向边
+    this._removeEdge(fromId, edge.to);
+    // 删除原始反向边（如果存在）
+    this._removeEdge(edge.to, fromId);
+    // 添加新的反向边
+    this.addEdge(virtualId, fromId, dist1, edge.speed, edge.mode, edge.name, false);
+    this.addEdge(edge.to, virtualId, dist2, edge.speed, edge.mode, edge.name, false);
+
+    // 重建空间索引
+    this.buildSpatialIndex();
+
+    return { id: virtualId, lat: projection.lat, lng: projection.lng };
+  }
+
+  /**
+   * 删除指定边
+   */
+  _removeEdge(fromId, toId) {
+    const neighbors = this.edges.get(fromId);
+    if (!neighbors) return;
+    const idx = neighbors.findIndex(e => e.to === toId);
+    if (idx !== -1) neighbors.splice(idx, 1);
+  }
+
+  /**
+   * 静态 Haversine 方法
+   */
+  static haversine(lat1, lng1, lat2, lng2) {
     const R = 6371;
     const dLat = (lat2 - lat1) * Math.PI / 180;
     const dLng = (lng2 - lng1) * Math.PI / 180;

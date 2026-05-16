@@ -7,7 +7,7 @@
     "start": "node start.js",
     "dev": "npx http-server . -p 8090 --cors -c-1",
     "test": "node test.js",
-    "build": "echo Desktop packaging TBD - use npm start for now"
+    "build": "node scripts/build-browser-bundle.js"
   },
   "dependencies": {
     "electron-squirrel-startup": "^1.0.1",

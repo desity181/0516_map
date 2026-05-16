@@ -51,7 +51,7 @@ class Pathfinder {
       }
 
       if (currentId === endId) {
-        return this._reconstructPath(cameFrom, currentId);
+        return this._reconstructPath(cameFrom, currentId, mode);
       }
 
       openSet.delete(currentId);
@@ -276,7 +276,7 @@ class Pathfinder {
   /**
    * 路径重建
    */
-  _reconstructPath(cameFrom, endId) {
+  _reconstructPath(cameFrom, endId, mode) {
     const path = [];
     const steps = [];
     let currentId = endId;
@@ -291,14 +291,14 @@ class Pathfinder {
 
       if (record && record.edge) {
         totalDistance += record.edge.distance;
-        const speed = record.edge.speed || 50;
+        const speed = this._getSpeed(record.edge, mode);
         totalTime += record.edge.distance / speed;
         steps.unshift({
           from: record.parent,
           to: currentId,
           distance: record.edge.distance,
           name: record.edge.name || '未命名道路',
-          speed: record.edge.speed || 50
+          speed: speed
         });
       }
 
