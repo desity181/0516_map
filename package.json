@@ -1,0 +1,44 @@
+{
+  "name": "offline-map-router",
+  "version": "1.0.0",
+  "description": "Offline map path planning desktop application",
+  "main": "src/main/main.js",
+  "scripts": {
+    "start": "node start.js",
+    "dev": "npx http-server . -p 8090 --cors -c-1",
+    "test": "node test.js",
+    "build": "echo Desktop packaging TBD - use npm start for now"
+  },
+  "dependencies": {
+    "electron-squirrel-startup": "^1.0.1",
+    "express": "^4.21.0",
+    "maplibre-gl": "^4.7.1",
+    "pbf": "^4.0.1",
+    "sql.js": "^1.11.0"
+  },
+  "devDependencies": {
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.offlinemap.router",
+    "productName": "Offline Map Router",
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "mac": {
+      "target": "dmg"
+    },
+    "linux": {
+      "target": "AppImage"
+    },
+    "files": [
+      "src/**/*",
+      "assets/**/*",
+      "node_modules/**/*"
+    ]
+  }
+}

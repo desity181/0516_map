@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>离线地图路径规划工具 v1.0</title>
+  <link rel="stylesheet" href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Sidebar -->
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <h1>🗺️ 离线路径规划</h1>
+        <button id="btn-toggle-sidebar" class="icon-btn" title="收起侧栏">◀</button>
+      </div>
+
+      <!-- Route Planning Panel -->
+      <section class="panel" id="route-panel">
+        <h2 class="panel-title">路径规划</h2>
+
+        <div class="mode-selector">
+          <button class="mode-btn active" data-mode="driving" title="驾车">🚗 驾车</button>
+          <button class="mode-btn" data-mode="walking" title="步行">🚶 步行</button>
+          <button class="mode-btn" data-mode="cycling" title="骑行">🚴 骑行</button>
+        </div>
+
+        <div class="optimize-selector">
+          <label class="radio-label">
+            <input type="radio" name="optimize" value="fastest" checked>
+            <span>最快路径</span>
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="optimize" value="shortest">
+            <span>最短路径</span>
+          </label>
+        </div>
+
+        <div class="waypoints-list" id="waypoints-list">
+          <div class="waypoint-item" data-index="0">
+            <span class="waypoint-marker start">A</span>
+            <input type="text" class="waypoint-input" placeholder="起点（点击地图设置）" data-index="0" readonly>
+            <button class="icon-btn btn-set-waypoint" title="在地图上选点" data-index="0">📍</button>
+            <button class="icon-btn btn-clear-waypoint" title="清除" data-index="0">✕</button>
+          </div>
+          <div class="waypoint-item" data-index="1">
+            <span class="waypoint-marker end">B</span>
+            <input type="text" class="waypoint-input" placeholder="终点（点击地图设置）" data-index="1" readonly>
+            <button class="icon-btn btn-set-waypoint" title="在地图上选点" data-index="1">📍</button>
+            <button class="icon-btn btn-clear-waypoint" title="清除" data-index="1">✕</button>
+          </div>
+        </div>
+
+        <button id="btn-add-waypoint" class="btn btn-secondary btn-full">+ 添加途经点</button>
+
+        <div class="route-actions">
+          <button id="btn-plan-route" class="btn btn-primary">🔍 规划路径</button>
+          <button id="btn-clear-route" class="btn btn-secondary">清除</button>
+        </div>
+
+        <div id="route-result" class="route-result hidden">
+          <h3>路径详情</h3>
+          <div class="route-summary">
+            <div class="stat">
+              <span class="stat-value" id="route-distance">--</span>
+              <span class="stat-label">距离</span>
+            </div>
+            <div class="stat">
+              <span class="stat-value" id="route-time">--</span>
+              <span class="stat-label">预计时间</span>
+            </div>
+          </div>
+          <div id="route-steps" class="route-steps"></div>
+        </div>
+      </section>
+
+      <!-- POI Search Panel -->
+      <section class="panel" id="poi-panel">
+        <h2 class="panel-title">地点搜索</h2>
+        <div class="search-box">
+          <input type="text" id="poi-search-input" placeholder="搜索地点名称...">
+          <button id="btn-poi-search" class="icon-btn" title="搜索">🔍</button>
+        </div>
+        <div class="category-filters" id="category-filters">
+          <button class="cat-btn active" data-cat="all">全部</button>
+          <button class="cat-btn" data-cat="scenic">🏛️ 景点</button>
+          <button class="cat-btn" data-cat="food">🍜 餐饮</button>
+          <button class="cat-btn" data-cat="shop">🛍️ 购物</button>
+          <button class="cat-btn" data-cat="hotel">🏨 住宿</button>
+          <button class="cat-btn" data-cat="transport">🚉 交通</button>
+          <button class="cat-btn" data-cat="medical">🏥 医疗</button>
+        </div>
+        <div id="poi-results" class="poi-results"></div>
+      </section>
+
+      <!-- Reverse Geocoding Panel -->
+      <section class="panel" id="geocode-panel">
+        <h2 class="panel-title">坐标查询</h2>
+        <div class="geocode-box">
+          <div class="coord-inputs">
+            <input type="number" id="input-lat" placeholder="纬度" step="0.000001">
+            <input type="number" id="input-lng" placeholder="经度" step="0.000001">
+          </div>
+          <button id="btn-reverse-geocode" class="btn btn-secondary btn-full">查询地址</button>
+        </div>
+        <div id="geocode-result" class="geocode-result hidden"></div>
+        <p class="hint">💡 右键点击地图可查询该坐标地址</p>
+      </section>
+
+      <!-- Data Info -->
+      <section class="panel" id="data-panel">
+        <h2 class="panel-title">路网信息</h2>
+        <div id="data-info" class="data-info">
+          <div class="info-row"><span>节点数</span><span id="info-nodes">--</span></div>
+          <div class="info-row"><span>边数</span><span id="info-edges">--</span></div>
+          <div class="info-row"><span>POI数</span><span id="info-pois">--</span></div>
+        </div>
+      </section>
+    </aside>
+
+    <!-- Map Container -->
+    <main id="map-container">
+      <div id="map"></div>
+      <div id="map-overlay-info" class="hidden">
+        <span id="overlay-coords"></span>
+      </div>
+      <div id="click-mode-indicator" class="hidden">
+        <span>📍 点击地图设置</span>
+        <span id="click-mode-label">起点</span>
+        <button id="btn-cancel-click-mode" class="icon-btn">✕</button>
+      </div>
+      <button id="btn-expand-sidebar" class="icon-btn">▶</button>
+    </main>
+  </div>
+
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

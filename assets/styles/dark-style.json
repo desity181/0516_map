@@ -1,0 +1,20 @@
+{
+  "version": 8,
+  "name": "Offline Dark",
+  "sources": {
+    "openmaptiles": {
+      "type": "vector",
+      "url": ""
+    }
+  },
+  "sprites": "",
+  "glyphs": "https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf",
+  "layers": [
+    {
+      "id": "background",
+      "type": "background",
+      "paint": {"background-color": "#0f172a"}
+    }
+  ],
+  "id": "offline-dark"
+}
